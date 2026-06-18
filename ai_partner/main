@@ -1,0 +1,198 @@
+import os
+from openai import OpenAI
+import streamlit as st
+from streamlit import empty
+import datetime
+import json
+#设置页面配置项
+st.set_page_config(
+    page_title="AI伴侣",
+    page_icon=":💩:",
+    layout="wide",
+    initial_sidebar_state="auto",
+    menu_items={
+        'Get Help': 'https://github.com/xiaoxiao-ai/ai-partner',
+        'Report a bug': "https://github.com/xiaoxiao-ai/ai-partner/issues",
+        'About': "# This is a demo of AI-Partner"
+    }
+)
+
+#定义一个函数，保存会话
+def  save_session():
+    if st.session_state.current_datetime:
+        session_data = {
+            "nick_name": st.session_state.nick_name,
+            "natrue": st.session_state.natrue,
+            "current_datetime": st.session_state.current_datetime,
+            "message": st.session_state.message
+        }
+        # 如果session目录不存在，系统自动创建
+    if not os.path.exists("session"):
+        os.mkdir("session")
+        # 以json格式保存会话数据
+    with open(f"session/{st.session_state.current_datetime}.json", "w", encoding="utf-8") as f:
+        json.dump(session_data, f, ensure_ascii=False, indent=4)
+#生成一个会话标识名
+def create_session_file():
+    return  datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+#加载所有会话列表信息
+def save_creat_session():
+    #定义一个空列表来存储json文件
+    session_list = []
+    #加载session目录下的文件
+    if os.path.exists("session"):  #判断session文件是否存在
+        file_list = os.listdir("session")  #列出 "session" 目录下的所有内容
+        for filename in file_list:
+            if filename.endswith(".json"):
+                session_list.append(filename[:-5])
+    session_list.sort(reverse=True)
+    return session_list
+#加载指定会话信息
+def specify_session(session_name):
+    try:
+        if os.path.exists(f"session/{session_name}.json"):
+            with open(f"session/{session_name}.json", "r", encoding="utf-8") as f:
+                session_data = json.load(f)
+                st.session_state.message = session_data["message"]
+                st.session_state.nick_name = session_data["nick_name"]
+                st.session_state.natrue = session_data["natrue"]
+                st.session_state.current_datetime = session_name
+    except Exception as e:
+        st.error("加载绘画失败")
+#删除会话
+def delete_session(session_name):
+    try:
+        if os.path.exists(f"session/{session_name}.json"):
+            os.remove(f"session/{session_name}.json") #删除文件
+            if session_name == st.session_state.current_datetime: #如果删除的是当前会话，则更新消息列表
+                st.session_state.message = []
+                st.session_state.current_datetime = create_session_file() #生成一个新的会话
+    except Exception as e:
+        st.error("加载绘画失败")
+#大标题
+st.title("AI伴侣")
+#logo
+st.logo("resource/img.png")
+#系统提示词
+system_prompt = """
+        你叫 %s，现在是用户的真实伴侣，请完全代入伴侣角色。
+        规则：
+            1. 每次只回1条消息
+            2. 禁止任何场景或状态描述性文字
+            3. 匹配用户的语言
+            4. 回复简短，像微信聊天一样
+            5. 有需要的话可以用❤️🌸等emoji表情
+            6. 用符合伴侣性格的方式对话
+            7. 回复的内容, 要充分体现伴侣的性格特征
+        伴侣性格：
+            - %s
+        你必须严格遵守上述规则来回复用户。
+    """
+
+client = OpenAI(api_key=os.environ.get('DEEPSEEK_API_KEY'),base_url="https://api.deepseek.com")
+
+
+#初始化聊天信息
+if "message" not in st.session_state:
+    #创建一个列表用来存储用户问的问题以及系统回复的答案 all
+    st.session_state.message = []
+#昵称
+if "nick_name" not in st.session_state:
+    st.session_state.nick_name = "小宝"
+#性格
+if "natrue" not in st.session_state:
+    st.session_state.natrue = "活泼开朗的台湾妹妹"
+#把当前时间设置为当前对话文件的文件名
+if "current_datetime" not in st.session_state:
+    st.session_state.current_datetime = create_session_file()
+
+st.text(f"当前会话：{st.session_state.current_datetime}"  )
+#展示message的信息
+for message in st.session_state.message:  #{"role": "user", "content": prompt}
+    st.chat_message(message["role"]).write(message["content"])
+
+
+#创建一个左侧侧边栏
+with st.sidebar:
+    st.title("AI控制面板")
+   #新建会话
+    if st.button("新建会话",width="stretch",icon="🤡"):
+        # 保存当前会话
+        save_session()
+        #创建一个全新的对话
+        if st.session_state.message: #如果message列表为空则不在创建新的会话
+            st.session_state.message = []  #清空message列表
+            st.session_state.current_datetime = create_session_file()
+            save_session()
+            st.rerun ()   #重新运行程序 因为新创建了一个会话，他会从头开始在执行一次代码，导致对话框不为空
+    #历史会话
+    st.text("历史会话")
+    session_list = save_creat_session()
+    for session in session_list:
+        col1,col2 = st.columns([4,1]) #将一行按比例分为两段
+        with col1:
+            if st.button(session,icon="❔️️",key=f"load_{session}",width="stretch",type="primary" if session==st.session_state.current_datetime else "secondary"):
+                specify_session(session)
+                st.rerun()
+
+        with col2:
+            if st.button("", icon="❌️", key=f"delete_{session}",width="stretch"):
+                delete_session(session)
+                st.rerun()
+    #分割线
+    st.divider()
+
+    st.subheader("伴侣信息")
+    nick_name = st.text_input("昵称",placeholder="请输入昵称",value=st.session_state.nick_name)
+    natrue = st.text_area("性格",placeholder="请输入性格",value=st.session_state.natrue)
+    # 检测用户是否修改了昵称或性格，并同步到 session_state
+    if nick_name != st.session_state.nick_name:
+        st.session_state.nick_name = nick_name
+    if natrue != st.session_state.natrue:
+        st.session_state.natrue = natrue
+
+
+
+
+#消息输入框
+prompt = st.chat_input("请输入你的问题：")
+if prompt:                                      #字符串会自动转换成bool值，非空为true
+    #显示用户输入
+    st.chat_message("user").write(prompt)
+    #添加到message列表中 保存用户输入的值
+    st.session_state.message.append({"role": "user", "content": prompt})
+    #调用大模型
+    response = client.chat.completions.create(
+        model="deepseek-v4-pro",
+        messages=[
+            {"role": "system", "content": system_prompt % (st.session_state.nick_name, st.session_state.natrue)},
+            #解包
+            *st.session_state.message,
+        ],
+        #非流式输出
+        #stream=False,
+        #流式输出
+        stream=True,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}}
+    )
+
+    #输出大模型返回的结果
+    # print("<------------------------大模型返回的值",response.choices[0].message.content)
+    # st.chat_message("assistant").write(response.choices[0].message.content)
+
+    #输出大模型的返回值 流式输出 一段一段的返回出来 chunk.choices[0].delta.content来获取一段段content的内容然后拼接起来
+    response_message = st.empty()#创建一个空的消息框
+    full_response = ""
+    for chunk in response:
+        if chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            full_response += content
+            #将信息显示在 response_message里
+            response_message.chat_message("assistant").write(full_response)
+
+
+    #添加到message列表中 保存大模型的返回值
+   # st.session_state.message.append({"role": "assistant", "content": response.choices[0].message.content})
+    st.session_state.message.append({"role": "assistant", "content": full_response})
+    save_session()
