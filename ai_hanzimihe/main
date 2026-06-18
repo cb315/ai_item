@@ -1,0 +1,214 @@
+import os
+from datetime import datetime
+from typing import Any
+from openai import OpenAI
+from fastapi import FastAPI
+from pydantic import BaseModel
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import json
+import logging
+
+#配置日志
+logging.basicConfig(
+    level=logging.INFO,     # 日志级别
+    format="%(filename)s: %(lineno)d  - %(levelname)s - %(message)s")# 日志格式
+
+app = FastAPI(title="汉字迷盒")
+#挂载静态文件
+#path中（/static）是静态文件路径，StaticFiles(directory="static")static是文件名
+app.mount("/static", StaticFiles(directory="static"), name="static")
+#如果指定文件不存在则创建一个该文件
+#创建一个session文件夹来存取浏览器返回的json文件
+if not os.path.exists("sessions"):
+    os.mkdir("sessions")
+
+#方法区
+#生成一个唯一的标识名（会话名）
+def generate_session_id():
+    return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+#根据session_id来获取对应的json文件
+def get_session_file_name(session_id):
+    return f"sessions/{session_id}.json"
+#BaseModel是pydantic库提供的父类（FastAPI深度集成pydantic—），用来定义返回的数据结构
+class ApiResponse(BaseModel):
+    code: int
+    data: Any
+    message: str
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+
+# 系统提示词 - 适配DeepSeek V4
+SYSTEM_PROMPT = """
+# 角色定义
+你是一个专门玩猜字谜的AI小助手，只进行字谜互动，不闲聊无关内容，全程纯文本交互，不使用表情符号。
+
+## 核心能力
+- 出字谜、判对错、给提示
+- 记忆已用谜题，确保会话内不重复
+- 简洁明快回应
+
+## 出题规则（严格执行！）
+1. 开场先友好打招呼，并随机出一道常见、简单、适合大众并必须符合逻辑推理的字谜，禁止使用生僻、低俗、网络烂梗。
+2. 题目格式：“谜面”（打一字）。
+3. 每次出题必须完全随机，禁止重复使用相同题目，也可以偶尔穿插使用，下面示例中的谜语。
+4. 新出题目时, 不要提示, 用户需要提示时, 或者答错时, 再给予合理的提示。
+
+## 判题规则（严格执行！）
+1. 用户只回复一个字时，直接视为答案。
+2. 答对：立即夸奖并揭晓谜底，格式如“太棒了！就是‘X’字！要不要再来一题？”
+3. 答错：告知不对，可给一句简短提示，但不泄露答案。格式如“不对哦，再想想~”
+4. 严禁在用户答错后直接公布答案！只有用户说“公布答案”或“不知道”等情况时才公布。
+
+## 互动流程
+1. 用户答对：夸奖 + 确认正确 + 询问“要不要再来一题？”
+2. 用户答错：告知不对 + 简单提示 + 鼓励继续猜
+3. 用户说“提示一下”：给出简短线索，不公布答案
+4. 用户说“公布答案”或“不知道”：揭晓谜底并解释 + 询问“要不要再来一题？”
+5. 用户说“换一题”“再来一题”：立即更换新字谜
+
+## 回复风格约束
+- 语气轻松有趣，但保持简洁
+- 全程只围绕字谜，拒绝回答其他问题
+- 回复不超过3句话
+- **绝对不要在回复中说“这个出过了，我来个新的”或类似表述** — 直接给出新谜语即可
+- 判题错误零容忍，不确定谜底时，先回复“我再想想”而不是乱判
+
+## 常见谜语类型及谜底参考示例, 仅仅为参照示例
+### 组合类
+- 「一加一不是二」= 王
+- 「二人不是天」= 夫
+- 「十口不是田」= 古
+
+### 包含类
+- 「一人在内」= 肉
+- 「口里有人」= 囚
+- 「门里有口」= 问
+- 「田里长草」= 苗
+- 「心里有你」= 您
+- 「山里有山」= 出
+- 「王头上有人」= 全
+- 「水上有石」= 泵
+
+### 半取类
+- 「半吃半拿」= 哈
+- 「半真半假」= 值
+- 「半青半紫」= 素
+- 「半朋半友」= 有
+- 「半推半就」= 扰
+- 「半山半水」= 汕
+
+### 象形类
+- 「三人又重逢」= 众
+- 「一口咬掉牛尾巴」= 告
+- 「两座山」= 出
+- 「三日又重逢」= 晶
+"""
+@app.get("/")
+def root():
+    #FileRespons方法是访问静态文件
+    return FileResponse("static/index.html")
+
+#新建会话
+@app.post("/api/sessions")
+def create_session()->ApiResponse:
+    logging.info("请求创建会话")
+    #生成一个唯一的标识名（会话名）
+    session_id = generate_session_id()
+    #组装
+    session_data = {
+        "current_session" : session_id,
+        "messages": []
+    }
+    with open(f"sessions/{session_id}.json", "w", encoding="utf-8") as f:
+        json.dump(session_data, f, ensure_ascii=False, indent=4)
+    #返回给前端js
+    return ApiResponse(code=200, data=session_id, message="创建成功")
+
+
+client = OpenAI( api_key=os.environ.get('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+#与AI交互
+@app.post("/api/chat")
+def chat(request:ChatRequest)->ApiResponse:    #获取前端发送的会话id和消息自动的封装到request中（ChatRequest里定义的参数需与返回的参数一致）
+    logging.info(f"请求与AI交互{request.session_id}:{request.message}")
+    #读取会话文件数据
+    session_path = get_session_file_name(request.session_id)
+    with open(session_path, "r", encoding="utf-8") as f:
+        session_data = json.load(f)
+    #构建与AI大模型交互的消息数据
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for message in session_data["messages"]:
+        messages.append(message)
+    messages.append({"role": "user", "content": request.message})  #request.message是你问大模型的问题，前端返回的数据
+    #调用deepseek大模型
+    response = client.chat.completions.create(
+        model="deepseek-v4-pro",
+        messages=messages,
+        stream=False,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}},
+        temperature = 1.5
+    )
+    #获取响应数据
+    ai_response = response.choices[0].message.content
+    #更新新的消息列表
+    #移除系统提示词
+    messages.pop(0)
+    messages.append({"role": "assistant", "content": ai_response})
+    session_data["messages"] = messages
+    #保存消息到json文件
+    with open(session_path, "w", encoding="utf-8") as f:
+        json.dump(session_data, f, ensure_ascii=False, indent=4)
+    #响应数据
+    return ApiResponse(code=200, data=ai_response, message="请求成功")
+
+
+#获取会话列表
+@app.get("/api/sessions")
+def get_sessions()->ApiResponse:
+    logging.info("请求获取会话列表")
+    #获取session文件下的所有json文件
+    session_file = [f for f in os.listdir("sessions") if f.endswith(".json")]
+    #剪切掉文件名后缀.json
+    session_list = [f[:-5] for f in session_file]
+    session_list.sort(reverse=True)
+    return ApiResponse(code=200, data=session_list, message="请求成功")
+
+
+#获取指定会话信息
+#http://localhost:8000/api/sessions/2026-06-02-16-48-55
+@app.get("/api/sessions/{session_id}") #{session_id}通配符，表示匹配任意字符串列如2026-06-02-16-48-55
+def get_session(session_id:str)->ApiResponse:
+    logging.info(f"请求获取会话信息{session_id}")
+    #获取session文件下的指定json文件
+    session_path = get_session_file_name(session_id)
+    #读取文件数据
+    with open(session_path, "r", encoding="utf-8") as f:
+        session_data = json.load(f)
+    return ApiResponse(code=200, data=session_data, message="请求成功")
+
+#删除指定会话
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id:str)->ApiResponse:
+    logging.info(f"请求删除会话{session_id}")
+    #获取session文件下的指定json文件
+    session_path = get_session_file_name(session_id)
+    #删除文件
+    if os.path.exists(session_path):
+        os.remove(session_path)
+
+    return ApiResponse(code=200, data=None, message="请求成功")
+
+
+#定义一个异常处理器
+@app.exception_handler(Exception)
+def exception_handler(request: Request, exc: Exception):
+    logging.error(f"请求异常{request.url}:{exc}")
+    return JSONResponse(content={"code": 500, "message": "请求异常.请联系管理员", "data": None})
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
